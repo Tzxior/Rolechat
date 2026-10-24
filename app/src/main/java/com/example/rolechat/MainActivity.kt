@@ -301,7 +301,7 @@ fun RoleChatApp() {
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    IconButton(onClick = {
+                    IconButton(enabled = roles.isNotEmpty(), onClick = {
                         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
                             startSpeechRecognition(context) { recognized -> input = (input + " " + recognized).trim() }
                         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -316,7 +316,7 @@ fun RoleChatApp() {
                             maxLines = 5
                         )
                     }
-                    IconButton(enabled = input.isNotBlank() && !busy, onClick = { val text = input.trim(); scope.launch { sendChat(text) } }) {
+                    IconButton(enabled = roles.isNotEmpty() && input.isNotBlank() && !busy, onClick = { val text = input.trim(); scope.launch { sendChat(text) } }) {
                         Icon(Icons.Default.Send, "发送")
                     }
                 }
@@ -498,7 +498,17 @@ fun loadRoles(prefs: android.content.SharedPreferences): List<Role> {
             val o = arr.getJSONObject(i)
             Role(o.getString("id"), o.getString("name"), o.optString("background"), o.optString("personality"),
                 o.optString("style"), o.optString("relationship"), o.optString("scene"))
-        }.filter { it.id.isNotBlank() }
+        }.filter { it.id.isNotBlank() }.filterNot { role ->
+            val isUntouchedSeed = when (role.id) {
+                "friend" -> role.name == "知心朋友"
+                "mentor" -> role.name == "人生导师"
+                "fantasy" -> role.name == "奇幻旅伴"
+                else -> false
+            }
+            val savedHistories = try { JSONObject(prefs.getString("histories", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+            val hasHistory = (savedHistories.optJSONArray(role.id)?.length() ?: 0) > 0
+            isUntouchedSeed && !hasHistory
+        }
     } catch (_: Exception) { emptyList() }
 }
 
