@@ -315,7 +315,8 @@ fun RoleChatApp() {
                             initialRoleName = selectedRole.name,
                             initialRolePrompt = rolePromptFor(selectedRole),
                             onHangup = { voiceMode = false },
-                            embedded = true
+                            embedded = true,
+                            onHistoryChanged = { histories = loadHistories(prefs) }
                         )
                     }
                 } else {
