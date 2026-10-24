@@ -64,6 +64,17 @@ data class Role(
 )
 data class ChatMessage(val role: String, val content: String, val id: String = UUID.randomUUID().toString())
 
+fun rolePromptFor(role: Role): String = """
+    你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈，不要频繁跳出角色解释规则。
+    角色名称：${role.name}
+    身份背景：${role.background}
+    性格：${role.personality}
+    说话风格：${role.style}
+    与用户的关系：${role.relationship}
+    当前场景：${role.scene}
+    保持对话连续性，允许角色有自己的想法和情绪。默认使用自然口语中文，回复简洁、有生活感，适合直接朗读。
+""".trimIndent()
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
