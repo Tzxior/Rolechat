@@ -245,7 +245,24 @@ fun RoleChatApp() {
                         }
                     },
                     actions = {
-                        IconButton(onClick = { context.startActivity(Intent(context, VoiceCallActivity::class.java)) }) { Icon(Icons.Default.Call, "语音通话") }
+                        IconButton(onClick = {
+                            val rolePrompt = """
+                                你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈。
+                                角色名称：${selectedRole.name}
+                                身份背景：${selectedRole.background}
+                                性格：${selectedRole.personality}
+                                说话风格：${selectedRole.style}
+                                与用户的关系：${selectedRole.relationship}
+                                当前场景：${selectedRole.scene}
+                                保持对话连续性，允许角色有自己的想法和情绪。默认使用自然口语中文，回复简洁、有生活感，适合直接朗读。
+                            """.trimIndent()
+                            val callIntent = Intent(context, VoiceCallActivity::class.java).apply {
+                                putExtra("role_id", selectedRole.id)
+                                putExtra("role_name", selectedRole.name)
+                                putExtra("role_prompt", rolePrompt)
+                            }
+                            context.startActivity(callIntent)
+                        }) { Icon(Icons.Default.Call, "语音通话") }
                         IconButton(onClick = { showRoleEditor = true; editingRole = null }) { Icon(Icons.Default.Add, "新建角色") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "设置") }
                     },
