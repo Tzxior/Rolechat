@@ -101,6 +101,8 @@ fun RoleChatApp() {
     }
     var lmUrl by remember { mutableStateOf(prefs.getString("lm_url", "http://192.168.1.100:1234/v1") ?: "") }
     var ttsUrl by remember { mutableStateOf(prefs.getString("tts_url", "http://192.168.1.100:8765/tts") ?: "") }
+    var voiceBridgeUrl by remember { mutableStateOf(prefs.getString("voice_bridge_url", "http://192.168.1.100:8770") ?: "") }
+    var proactiveSeconds by remember { mutableIntStateOf(prefs.getInt("voice_proactive_seconds", 45)) }
     var model by remember { mutableStateOf(prefs.getString("model", "") ?: "") }
     var voice by remember { mutableStateOf(prefs.getString("voice", "zh-CN-XiaoxiaoNeural") ?: "") }
     var showSettings by remember { mutableStateOf(false) }
@@ -136,6 +138,8 @@ fun RoleChatApp() {
         prefs.edit()
             .putString("lm_url", lmUrl)
             .putString("tts_url", ttsUrl)
+            .putString("voice_bridge_url", voiceBridgeUrl.trim().trimEnd('/'))
+            .putInt("voice_proactive_seconds", proactiveSeconds)
             .putString("model", model)
             .putString("voice", voice)
             .putString("selected_role", selectedRoleId)
@@ -417,7 +421,10 @@ fun RoleChatApp() {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("填写电脑的局域网 IPv4 地址。LM Studio 默认端口 1234。")
                         OutlinedTextField(lmUrl, { lmUrl = it }, label = { Text("LM Studio API 地址") }, singleLine = true)
-                        OutlinedTextField(ttsUrl, { ttsUrl = it }, label = { Text("语音服务地址") }, singleLine = true)
+                        OutlinedTextField(ttsUrl, { ttsUrl = it }, label = { Text("文字语音服务地址") }, singleLine = true)
+                        OutlinedTextField(voiceBridgeUrl, { voiceBridgeUrl = it }, label = { Text("电话语音桥接地址") }, singleLine = true)
+                        Text("电话静默主动开口时间：${proactiveSeconds} 秒")
+                        Slider(value = proactiveSeconds.toFloat(), onValueChange = { proactiveSeconds = it.toInt() }, valueRange = 20f..180f, steps = 7)
                         OutlinedTextField(model, { model = it }, label = { Text("模型 ID（留空自动获取）") }, singleLine = true)
                         OutlinedTextField(voice, { voice = it }, label = { Text("语音音色") }, singleLine = true)
                         Text("示例：LM Studio http://192.168.1.20:1234/v1；TTS http://192.168.1.20:8765/tts", style = MaterialTheme.typography.bodySmall)
