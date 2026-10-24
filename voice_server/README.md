@@ -1,29 +1,56 @@
-# RoleChat 连续语音通话桥接服务（实验版）
+# RoleChat 连续语音通话桥接服务
 
-该服务在电脑端串联：手机 WAV 音频 -> faster-whisper 中文识别 -> LM Studio OpenAI 兼容接口 -> GPT-SoVITS API -> 手机播放合成音频。
+本服务运行在 Windows 电脑上，供 Android APK 在同一局域网内访问。请求链路为：
 
-## 1. 前提条件
+1. 手机持续采集语音，在本地检测到一句话结束后上传该段 WAV。
+2. faster-whisper 识别中文。
+3. LM Studio 根据当前角色设定和角色历史生成简短口语回复。
+4. GPT-SoVITS 合成角色语音并返回手机。
+5. 手机播放完成后恢复麦克风监听；用户长时间没说话时，手机调用主动聊天接口，让角色基于已有历史主动开口。
+
+## 前提条件
 
 - Windows、Python 3.10+。
-- LM Studio 已启动 API server。默认地址是 `http://127.0.0.1:1234/v1`；如果你的端口为 1235，请按下方设置。
-- GPT-SoVITS 已按你当前版本的说明启动 API，默认假定为 `http://127.0.0.1:9880`，并有可用的参考音频。
-- 手机和电脑在可信的同一局域网。不要把 8770、LM Studio 或 GPT-SoVITS API 暴露到公网。
+- LM Studio 已启动 API server。示例配置使用 http://127.0.0.1:1235/v1；如果你的端口不同，请调整 LM_STUDIO_URL。
+- GPT-SoVITS 已按当前安装版本的说明启动 API，默认假定地址为 http://127.0.0.1:9880，并有可用参考音频。
+- 手机和电脑在可信的同一局域网。不要将桥接服务、LM Studio 或 GPT-SoVITS API 暴露到公网。
 
-## 2. 配置并启动
+## 配置与启动
 
-1. 复制 `voice_bridge.env.example.bat` 中的环境变量到命令提示符执行（修改 LM Studio 端口、参考音频路径和参考文本）。也可以在 `start_voice_bridge.bat` 执行前，在同一终端逐项设置变量。
-2. 双击 `start_voice_bridge.bat`。首次启动会下载 Python 依赖和 faster-whisper 模型；首次识别还会下载模型文件，需联网。
-3. 在手机浏览器访问 `http://电脑IP:8770/health`，应返回 JSON。允许 Windows 防火墙仅在“专用网络”访问 TCP 8770。
-4. Android 应用设置中将语音桥接地址设为 `http://电脑IP:8770/voice/turn`。
+1. 修改 voice_bridge.env.example.bat 中的 LM Studio 地址、参考音频路径和参考文本。
+2. 打开命令提示符，进入 voice_server 文件夹，执行该环境变量文件，然后在同一个窗口启动服务。例如：
 
-## 3. GPT-SoVITS 兼容性
+   ```bat
+   call voice_bridge.env.example.bat
+   call start_voice_bridge.bat
+   ```
 
-本服务使用常见的 GPT-SoVITS API v2 `POST /tts` 参数（`text`、`text_lang`、`ref_audio_path`、`prompt_text`、`prompt_lang`、`media_type`）。不同发行版/版本可能使用不同的 API 路径或字段，请以你实际启动的 API 文档为准，并按需修改 `voice_bridge.py` 的请求部分。
+   也可以手动逐项设置环境变量。示例参考音频路径和参考文本必须替换成真实值。
+3. 首次启动会创建 .venv 并安装依赖；首次运行 faster-whisper 时可能下载识别模型，需要联网。
+4. 在手机浏览器访问 http://电脑IP:8770/health。返回 JSON 表示服务可以访问。
+5. Windows 防火墙仅允许可信的“专用网络”访问 TCP 8770。
 
-## 4. 当前功能边界
+## Android 通话设置
 
-这是“录一段 -> 上传 -> 识别/生成/合成 -> 播放”的轮次式通话原型，不是低延迟全双工实时流式通话。手机端录音由用户点击开始/停止控制；每一轮完整处理后播放回复。后续可再加自动静音检测、回声消除、边说边传和打断播放。服务会将最近少量文字历史作为上下文，但不会自动写回现有 APK 的角色聊天记录。
+- 推荐填桥接根地址：http://电脑IP:8770。
+- 也兼容填完整的单轮地址：http://电脑IP:8770/voice/turn。
+- 模型 ID 可以留空，服务会从 LM Studio 的 /models 自动选择第一个已加载模型；若不合适，请填写准确模型 ID。
+- 当前角色的名称、角色提示词和最近 20 条聊天记录会随请求发送。通话中识别的用户文本和角色回复会写回该角色在 APK 中的聊天历史。
 
-## 5. 性能
+## 接口
 
-faster-whisper 默认 small + CPU int8，首次加载较慢；可把 `WHISPER_MODEL` 改为 `base` 提升速度（识别质量会下降）。如果已配置 CUDA 环境，可尝试 `WHISPER_DEVICE=cuda` 和相应 compute type。LM Studio 的生成速度仍取决于本机模型和硬件。
+- GET /health：服务健康状态和配置摘要。
+- POST /voice/turn：multipart 表单，字段包括 audio（WAV）、role_name、role_prompt、model、history_json。
+- POST /voice/proactive：JSON 表单，字段包括 role_name、role_prompt、model、history_json。根据角色历史生成一条主动开场，并返回语音。
+
+两个语音接口均返回 transcript、answer、audio_base64 和 audio_mime。
+
+## GPT-SoVITS 兼容性
+
+服务按常见 GPT-SoVITS API v2 的 POST /tts 编写，使用 text、text_lang、ref_audio_path、prompt_text、prompt_lang、media_type 等字段。不同发行版可能有不同路径或参数，请以本机 API 文档为准。
+
+## 延迟与限制
+
+这是自动轮次式连续对话，不是低延迟全双工音频流。手机会自动监听和断句，但每轮识别、模型生成、语音合成期间会暂停录音，播放完成后恢复监听；当前没有边说边上传、流式语音输出或声学回声消除。模型与语音合成耗时取决于电脑硬件和服务配置。
+
+默认 faster-whisper 使用 small + CPU int8。可将 WHISPER_MODEL 改为 base 以降低延迟（识别质量可能下降）；只有在 CUDA 环境正确配置时才尝试 WHISPER_DEVICE=cuda。
