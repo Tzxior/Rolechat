@@ -35,6 +35,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -99,6 +102,18 @@ fun RoleChatApp() {
     }
     var histories by remember { mutableStateOf(loadHistories(prefs)) }
     val listState = rememberLazyListState()
+
+    DisposableEffect(context) {
+        val owner = context as? LifecycleOwner
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                histories = loadHistories(prefs)
+                selectedRoleId = prefs.getString("selected_role", selectedRoleId) ?: selectedRoleId
+            }
+        }
+        owner?.lifecycle?.addObserver(observer)
+        onDispose { owner?.lifecycle?.removeObserver(observer) }
+    }
 
     val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.first()
     val messages = histories[selectedRole.id] ?: emptyList()
