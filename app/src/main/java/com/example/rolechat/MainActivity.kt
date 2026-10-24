@@ -13,6 +13,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -64,6 +66,17 @@ data class Role(
 )
 data class ChatMessage(val role: String, val content: String, val id: String = UUID.randomUUID().toString())
 
+fun rolePromptFor(role: Role): String = """
+    你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈，不要频繁跳出角色解释规则。
+    角色名称：${role.name}
+    身份背景：${role.background}
+    性格：${role.personality}
+    说话风格：${role.style}
+    与用户的关系：${role.relationship}
+    当前场景：${role.scene}
+    保持对话连续性，允许角色有自己的想法和情绪。默认使用自然口语中文，回复简洁、有生活感，适合直接朗读。
+""".trimIndent()
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,9 +101,12 @@ fun RoleChatApp() {
     }
     var lmUrl by remember { mutableStateOf(prefs.getString("lm_url", "http://192.168.1.100:1234/v1") ?: "") }
     var ttsUrl by remember { mutableStateOf(prefs.getString("tts_url", "http://192.168.1.100:8765/tts") ?: "") }
+    var voiceBridgeUrl by remember { mutableStateOf(prefs.getString("voice_bridge_url", "http://192.168.1.100:8770") ?: "") }
+    var proactiveSeconds by remember { mutableIntStateOf(prefs.getInt("voice_proactive_seconds", 45)) }
     var model by remember { mutableStateOf(prefs.getString("model", "") ?: "") }
     var voice by remember { mutableStateOf(prefs.getString("voice", "zh-CN-XiaoxiaoNeural") ?: "") }
     var showSettings by remember { mutableStateOf(false) }
+    var voiceMode by remember { mutableStateOf(false) }
     var showRoleEditor by remember { mutableStateOf(false) }
     var editingRole by remember { mutableStateOf<Role?>(null) }
     var status by remember { mutableStateOf("请在设置中填写电脑的局域网 IP") }
@@ -115,13 +131,15 @@ fun RoleChatApp() {
         onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
-    val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.first()
+    val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull() ?: Role("", "", "", "", "", "", "")
     val messages = histories[selectedRole.id] ?: emptyList()
 
     fun persist() {
         prefs.edit()
             .putString("lm_url", lmUrl)
             .putString("tts_url", ttsUrl)
+            .putString("voice_bridge_url", voiceBridgeUrl.trim().trimEnd('/'))
+            .putInt("voice_proactive_seconds", proactiveSeconds)
             .putString("model", model)
             .putString("voice", voice)
             .putString("selected_role", selectedRoleId)
@@ -260,24 +278,33 @@ fun RoleChatApp() {
                         }
                     },
                     actions = {
-                        IconButton(onClick = {
-                            val rolePrompt = """
-                                你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈。
-                                角色名称：${selectedRole.name}
-                                身份背景：${selectedRole.background}
-                                性格：${selectedRole.personality}
-                                说话风格：${selectedRole.style}
-                                与用户的关系：${selectedRole.relationship}
-                                当前场景：${selectedRole.scene}
-                                保持对话连续性，允许角色有自己的想法和情绪。默认使用自然口语中文，回复简洁、有生活感，适合直接朗读。
-                            """.trimIndent()
-                            val callIntent = Intent(context, VoiceCallActivity::class.java).apply {
-                                putExtra("role_id", selectedRole.id)
-                                putExtra("role_name", selectedRole.name)
-                                putExtra("role_prompt", rolePrompt)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                                .background(Color(0xFF30343E), RoundedCornerShape(24.dp)).padding(3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = { voiceMode = false },
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = if (!voiceMode) Color(0xFFB6C8FF) else Color.Transparent,
+                                    contentColor = if (!voiceMode) Color(0xFF14161C) else Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp)
+                            ) { Text("对话") }
+                            TextButton(
+                                enabled = roles.isNotEmpty(),
+                                onClick = { voiceMode = true },
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = if (voiceMode) Color(0xFFB6C8FF) else Color.Transparent,
+                                    contentColor = if (voiceMode) Color(0xFF14161C) else Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Icon(Icons.Default.Call, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("电话")
                             }
-                            context.startActivity(callIntent)
-                        }) { Icon(Icons.Default.Call, "语音通话") }
+                        }
                         IconButton(onClick = { showRoleEditor = true; editingRole = null }) { Icon(Icons.Default.Add, "新建角色") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "设置") }
                     },
@@ -285,12 +312,24 @@ fun RoleChatApp() {
                 )
             },
             bottomBar = {
+                if (voiceMode) {
+                    key(selectedRole.id) {
+                        VoiceCallScreen(
+                            initialRoleId = selectedRole.id,
+                            initialRoleName = selectedRole.name,
+                            initialRolePrompt = rolePromptFor(selectedRole),
+                            onHangup = { voiceMode = false },
+                            embedded = true,
+                            onHistoryChanged = { histories = loadHistories(prefs) }
+                        )
+                    }
+                } else {
                 Row(
                     Modifier.fillMaxWidth().background(Color(0xFF20232B)).padding(10.dp),
                     verticalAlignment = Alignment.Bottom,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    IconButton(onClick = {
+                    IconButton(enabled = roles.isNotEmpty(), onClick = {
                         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
                             startSpeechRecognition(context) { recognized -> input = (input + " " + recognized).trim() }
                         else micPermission.launch(Manifest.permission.RECORD_AUDIO)
@@ -305,9 +344,10 @@ fun RoleChatApp() {
                             maxLines = 5
                         )
                     }
-                    IconButton(enabled = input.isNotBlank() && !busy, onClick = { val text = input.trim(); scope.launch { sendChat(text) } }) {
+                    IconButton(enabled = roles.isNotEmpty() && input.isNotBlank() && !busy, onClick = { val text = input.trim(); scope.launch { sendChat(text) } }) {
                         Icon(Icons.Default.Send, "发送")
                     }
+                }
                 }
             },
             containerColor = Color(0xFF14161C)
@@ -326,7 +366,15 @@ fun RoleChatApp() {
                         )
                     }
                 }
-                if (messages.isEmpty()) {
+                if (roles.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("还没有角色", style = MaterialTheme.typography.titleLarge)
+                            Text("从空白开始创建，或使用模板作为起点。模板本身不会成为角色。", color = Color.LightGray)
+                            Button(onClick = { editingRole = null; showRoleEditor = true }) { Text("创建自定义角色") }
+                        }
+                    }
+                } else if (messages.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("开始和 ${selectedRole.name} 对话", style = MaterialTheme.typography.titleLarge)
@@ -373,7 +421,10 @@ fun RoleChatApp() {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("填写电脑的局域网 IPv4 地址。LM Studio 默认端口 1234。")
                         OutlinedTextField(lmUrl, { lmUrl = it }, label = { Text("LM Studio API 地址") }, singleLine = true)
-                        OutlinedTextField(ttsUrl, { ttsUrl = it }, label = { Text("语音服务地址") }, singleLine = true)
+                        OutlinedTextField(ttsUrl, { ttsUrl = it }, label = { Text("文字语音服务地址") }, singleLine = true)
+                        OutlinedTextField(voiceBridgeUrl, { voiceBridgeUrl = it }, label = { Text("电话语音桥接地址") }, singleLine = true)
+                        Text("电话静默主动开口时间：${proactiveSeconds} 秒")
+                        Slider(value = proactiveSeconds.toFloat(), onValueChange = { proactiveSeconds = it.toInt() }, valueRange = 20f..180f, steps = 7)
                         OutlinedTextField(model, { model = it }, label = { Text("模型 ID（留空自动获取）") }, singleLine = true)
                         OutlinedTextField(voice, { voice = it }, label = { Text("语音音色") }, singleLine = true)
                         Text("示例：LM Studio http://192.168.1.20:1234/v1；TTS http://192.168.1.20:8765/tts", style = MaterialTheme.typography.bodySmall)
@@ -418,16 +469,36 @@ fun RoleChatApp() {
 @Composable
 fun RoleEditorDialog(role: Role?, onDismiss: () -> Unit, onSave: (Role) -> Unit, onDelete: (Role) -> Unit) {
     var name by remember(role?.id) { mutableStateOf(role?.name ?: "") }
-    var background by remember(role?.id) { mutableStateOf(role?.background ?: "一位熟悉用户的朋友，有自己的生活经历。") }
-    var personality by remember(role?.id) { mutableStateOf(role?.personality ?: "温柔、聪明、幽默，偶尔会调侃用户。") }
-    var style by remember(role?.id) { mutableStateOf(role?.style ?: "自然口语化，像日常聊天，不要长篇说教。") }
-    var relationship by remember(role?.id) { mutableStateOf(role?.relationship ?: "亲密且互相信任的朋友") }
-    var scene by remember(role?.id) { mutableStateOf(role?.scene ?: "晚上，在一个安静舒适的地方聊天。") }
+    var background by remember(role?.id) { mutableStateOf(role?.background ?: "") }
+    var personality by remember(role?.id) { mutableStateOf(role?.personality ?: "") }
+    var style by remember(role?.id) { mutableStateOf(role?.style ?: "") }
+    var relationship by remember(role?.id) { mutableStateOf(role?.relationship ?: "") }
+    var scene by remember(role?.id) { mutableStateOf(role?.scene ?: "") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (role == null) "创建角色" else "编辑角色") },
         text = {
-            Column(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                if (role == null) {
+                    Text("可选模板（点击后可继续任意修改）", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = {
+                            name = "知心朋友"; background = "一位熟悉用户的朋友，有自己的生活经历。"
+                            personality = "温柔、聪明、幽默，偶尔会调侃用户。"; style = "自然口语化，像日常聊天，不要长篇说教。"
+                            relationship = "亲密且互相信任的朋友"; scene = "在一个安静舒适的地方聊天。"
+                        }) { Text("知心朋友") }
+                        TextButton(onClick = {
+                            name = "人生导师"; background = "阅历丰富、务实的导师。"
+                            personality = "冷静、睿智、坦诚，不说空话。"; style = "清晰、直接，善于追问和启发。"
+                            relationship = "值得信任的顾问"; scene = "正在讨论最近遇到的问题。"
+                        }) { Text("人生导师") }
+                        TextButton(onClick = {
+                            name = "奇幻旅伴"; background = "来自奇幻世界的冒险者。"
+                            personality = "勇敢、好奇、富有想象力。"; style = "有画面感，但保持对话自然。"
+                            relationship = "并肩旅行的伙伴"; scene = "你们正在一座古城的旅店里休息。"
+                        }) { Text("奇幻旅伴") }
+                    }
+                }
                 OutlinedTextField(name, { name = it }, label = { Text("角色名称") }, singleLine = true)
                 OutlinedTextField(background, { background = it }, label = { Text("身份背景") })
                 OutlinedTextField(personality, { personality = it }, label = { Text("性格") })
@@ -452,19 +523,25 @@ fun RoleEditorDialog(role: Role?, onDismiss: () -> Unit, onSave: (Role) -> Unit,
 
 fun loadRoles(prefs: android.content.SharedPreferences): List<Role> {
     val raw = prefs.getString("roles", null)
-    if (raw.isNullOrBlank()) return listOf(
-        Role("friend", "知心朋友", "一位熟悉用户的朋友，有自己的生活经历。", "温柔、聪明、幽默，偶尔会调侃用户。", "自然口语化，像日常聊天，不要长篇说教。", "亲密且互相信任的朋友", "晚上，在一个安静舒适的地方聊天。"),
-        Role("mentor", "人生导师", "阅历丰富、务实的导师。", "冷静、睿智、坦诚，不说空话。", "清晰、直接，善于追问和启发。", "值得信任的顾问", "正在和用户讨论最近遇到的问题。"),
-        Role("fantasy", "奇幻旅伴", "来自奇幻世界的冒险者。", "勇敢、好奇、富有想象力。", "有画面感，但保持对话自然。", "并肩旅行的伙伴", "你们正在一座古城的旅店里休息。")
-    )
+    if (raw.isNullOrBlank()) return emptyList()
     return try {
         val arr = JSONArray(raw)
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             Role(o.getString("id"), o.getString("name"), o.optString("background"), o.optString("personality"),
                 o.optString("style"), o.optString("relationship"), o.optString("scene"))
-        }.ifEmpty { listOf(Role("friend", "知心朋友", "", "", "", "", "")) }
-    } catch (_: Exception) { listOf(Role("friend", "知心朋友", "", "", "", "", "")) }
+        }.filter { it.id.isNotBlank() }.filterNot { role ->
+            val isUntouchedSeed = when (role.id) {
+                "friend" -> role.name == "知心朋友"
+                "mentor" -> role.name == "人生导师"
+                "fantasy" -> role.name == "奇幻旅伴"
+                else -> false
+            }
+            val savedHistories = try { JSONObject(prefs.getString("histories", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+            val hasHistory = (savedHistories.optJSONArray(role.id)?.length() ?: 0) > 0
+            isUntouchedSeed && !hasHistory
+        }
+    } catch (_: Exception) { emptyList() }
 }
 
 fun loadHistories(prefs: android.content.SharedPreferences): Map<String, List<ChatMessage>> {
