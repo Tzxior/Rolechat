@@ -1,67 +1,126 @@
-# 角色对话 APK（第一版）
+# 角色对话 APK
 
-安卓原生 Kotlin + Jetpack Compose；电脑端 LM Studio 提供聊天 API，电脑端 Python 服务提供 Edge TTS 语音合成。
+安卓原生 Kotlin + Jetpack Compose 的角色聊天应用。电脑端通过 LM Studio 运行本地大语言模型；普通聊天语音播放可使用 Edge TTS，新增的语音通话原型则可通过 GPT-SoVITS 合成角色语音。
 
-## 功能
-- 多角色创建、编辑、删除与切换
-- 每个角色独立聊天记录和上下文
-- 连接 LM Studio OpenAI 兼容 API
-- 安卓系统语音识别（中文语音输入）
-- 电脑端 Edge TTS 合成高质量中文语音，手机播放
-- URL、模型 ID、语音音色可在应用内设置
+> 当前语音通话功能属于第一版原型。请先按本文完成配置并自行构建验证；尚未实现完整的实时全双工通话与静默后自动主动聊天。
 
-## 一、电脑端配置 LM Studio
-1. 在 LM Studio 加载 `Qwen3.5-35B-A3B-Abliterated GGUF`。
-2. 打开 Developer / Local Server，启动 API 服务，默认端口通常是 `1234`。
-3. 在服务器设置中允许局域网连接（不同版本设置项名称可能不同），并确保 Windows 防火墙允许该端口通过专用网络。
-4. 在电脑命令行运行 `ipconfig`，查找当前局域网网卡的 IPv4 地址，例如 `192.168.1.20`。
-5. 在同一 Wi-Fi/局域网下，手机和电脑需要互相可达。不要把 API 端口直接暴露到公网。
+## 功能概览
 
-LM Studio API 地址示例：
-`http://192.168.1.20:1234/v1`
+- 多角色创建、编辑、删除和切换。
+- 各角色独立保存聊天记录与上下文（以应用现有实现为准）。
+- 通过 OpenAI 兼容 API 连接 LM Studio。
+- 安卓系统语音识别，用于普通聊天中的语音输入。
+- 普通聊天语音播放：电脑端 Edge TTS 服务，支持配置音色。
+- **新增语音通话原型**：安卓录音并上传至电脑，电脑端语音识别、LM Studio 生成回复、GPT-SoVITS 合成音频，再传回手机播放。
+- 语音通话中可以停止当前播放并开始新一轮说话。
 
-## 二、启动电脑端语音服务
-需要 Windows、Python 3.10 或更新版本，且首次安装需要联网下载依赖/访问 Edge TTS。
-1. 双击 `tts_server/start_windows.bat`。
-2. 如果 Windows 防火墙询问，允许专用网络访问。
-3. 在手机浏览器打开 `http://电脑IP:8765/health`，若返回 `{"ok":true,...}` 即可访问。
-4. 默认音色 `zh-CN-XiaoxiaoNeural`。可在应用设置中改成 `zh-CN-YunxiNeural` 等 Edge TTS 支持的声音。
+## 组件与端口
 
-注意：Edge TTS 使用在线语音服务，不是完全离线语音；合成时需要电脑可访问互联网。不要将此服务暴露到公网。若需要完全离线的高质量 TTS，可后续替换为本地模型服务。
+| 组件 | 默认地址 / 端口 | 用途 |
+|---|---|---|
+| LM Studio | `http://电脑IP:1234/v1` | 本地大语言模型 API |
+| Edge TTS 服务 | `http://电脑IP:8765` | 普通聊天的文字转语音 |
+| 语音通话桥接服务 | `http://电脑IP:8770` | 接收录音、识别、请求模型、调用 GPT-SoVITS |
 
-## 三、用 Android Studio 打开并运行
-1. 解压工程 ZIP。
-2. Android Studio 选择 **Open**，打开 `RoleChatAndroid` 文件夹。
-3. 使用 JDK 17；等待 Gradle Sync 完成。
-4. 连接安卓手机，开启开发者选项和 USB 调试，点击 Run。
-5. 首次运行在右上角设置按钮中填写：
+如果 LM Studio 使用其他端口（例如 1235），请相应修改环境变量。所有地址中的“电脑IP”都应替换为电脑在当前局域网中的 IPv4 地址。
+
+## 一、配置 LM Studio
+
+1. 在 LM Studio 中下载并加载适合电脑硬件的模型。
+2. 打开 Developer / Local Server，启动 API 服务。
+3. 确认 API 服务允许手机从局域网访问；按需设置监听地址，并在 Windows 防火墙中仅允许可信的专用网络连接。
+4. 在电脑命令行运行 `ipconfig`，找到当前局域网网卡的 IPv4 地址。
+5. 在电脑本机先确认 LM Studio 的 `/v1/models` 接口能正常返回已加载模型。
+
+API 地址示例：`http://192.168.1.20:1234/v1`
+
+模型生成速度主要取决于模型大小、上下文长度和电脑硬件。建议先在 LM Studio 中确认模型可以正常且及时地回复，再连接手机。
+
+## 二、普通聊天语音：Edge TTS
+
+此服务用于原有聊天功能的语音播放，与下面的 GPT-SoVITS 语音通话桥接服务是两套独立服务。
+
+1. Windows 安装 Python 3.10 或更新版本。
+2. 双击 `tts_server/start_windows.bat`。
+3. 在手机浏览器打开 `http://电脑IP:8765/health`，确认服务可访问。
+4. 在应用设置中配置：
    - LM Studio API：`http://电脑IP:1234/v1`
    - TTS 服务：`http://电脑IP:8765/tts`
-   - 模型 ID：留空会尝试自动读取 `/v1/models`
-   - 语音音色：`zh-CN-XiaoxiaoNeural`
-6. 点击“保存并测试”。若连接失败，检查 IP、同一局域网、LM Studio 服务器是否启动和防火墙。
+   - 模型 ID：可以先留空，或从 `/v1/models` 获取后手动填写
+   - 音色：例如 `zh-CN-XiaoxiaoNeural`
 
+Edge TTS 需要电脑能够访问互联网，并非完全离线合成。若普通聊天原有设置项与你的工程界面略有不同，以应用实际显示为准。
 
-## 五、语音通话原型（新增）
+## 三、新增语音通话：GPT-SoVITS
 
-新增 Android 语音通话入口与 PC 端语音桥接服务，代码位于 `voice_server/`。
+电脑端代码位于 `voice_server/`。该服务会依次执行：
 
-1. 先按 `voice_server/README.md` 配置并启动 GPT-SoVITS API。
-2. 根据示例文件设置 `LM_STUDIO_URL`、`GPT_SOVITS_REF_AUDIO`、参考文本等环境变量。
-3. 启动 `voice_server/start_voice_bridge.bat`，手机端访问 `http://电脑IP:8770/health` 验证连接。
-4. 在 APK 聊天页右上角点击电话图标，进入语音通话；首次使用需要麦克风权限，并在通话页设置中填写 `http://电脑IP:8770/voice/turn`。
+1. 接收手机上传的 WAV 音频。
+2. 使用 faster-whisper 进行中文语音识别。
+3. 将识别文本和最近几轮对话上下文发送给 LM Studio。
+4. 把模型回复交给 GPT-SoVITS 合成语音。
+5. 返回识别文本、回复文本和音频给手机播放。
 
-本版是可先行验证的轮次式语音原型：点击录音、结束并发送、电脑识别/生成/合成、手机播放；可在播放时点击“打断并说话”。它尚不是自动 VAD 的全双工连续通话，静默后自动主动开口也尚未接入。请先在本地按 GPT-SoVITS 实际版本核对 API 路径和参数。
+### 电脑端准备
 
-## 六、打包 APK
-Android Studio：**Build > Build Bundle(s) / APK(s) > Build APK(s)**。
-生成路径通常为 `app/build/outputs/apk/debug/app-debug.apk`。
+- Windows、Python 3.10+。
+- LM Studio 已启动并加载模型。
+- GPT-SoVITS 已单独安装、准备好可用的参考音频，并启动其 API 服务。
+- 手机与电脑位于同一个可信局域网。
+
+### 配置与启动
+
+1. 阅读 `voice_server/README.md`，确认你安装的 GPT-SoVITS 版本的 API 路径、字段和参数。
+2. 按需设置 `voice_server/voice_bridge.env.example.bat` 中的环境变量。**示例中的参考音频路径和参考文本必须替换为你自己的实际值。**
+3. 打开命令提示符，进入项目的 `voice_server` 目录，把示例文件中的变量按实际情况设置到当前终端。例如：
+
+   ```bat
+   set LM_STUDIO_URL=http://127.0.0.1:1235/v1
+   set LM_STUDIO_MODEL=
+   set GPT_SOVITS_URL=http://127.0.0.1:9880
+   set GPT_SOVITS_REF_AUDIO=D:\GPT-SoVITS\参考音频.wav
+   set GPT_SOVITS_PROMPT_TEXT=这里填写参考音频中准确的文字
+   set GPT_SOVITS_PROMPT_LANG=zh
+   set WHISPER_MODEL=small
+   set WHISPER_DEVICE=cpu
+   set WHISPER_COMPUTE_TYPE=int8
+   ```
+
+   如果你的 LM Studio 使用 1234 端口，请将上面的地址改为 `http://127.0.0.1:1234/v1`。若 GPT-SoVITS 使用其他端口或 API 参数，也请按实际版本调整。
+4. 在同一个命令提示符窗口运行 `start_voice_bridge.bat`。首次安装依赖及下载 faster-whisper 模型需要联网，第一次识别也可能等待模型下载。
+5. 在手机浏览器访问 `http://电脑IP:8770/health`。若能返回服务状态 JSON，说明手机到桥接服务的网络连通。
+6. 打开 APK，在聊天页右上角点击电话图标进入语音通话。在通话页的“设置”中填写：
+   - 电脑语音桥接 API：`http://电脑IP:8770/voice/turn`
+   - 模型 ID：可留空，让服务自动查询 LM Studio 已加载模型；如果自动选择不符合预期，再填写准确的模型 ID
+   - 角色名称和角色性格提示词
+7. 首次使用时允许麦克风权限。点击“开始说话”，说完点击“结束并发送”，等待电脑处理并播放角色回复；播放过程中可点击“打断并说话”。
+
+### 语音通话原型的当前限制
+
+- 采用“录音一轮 → 上传 → 识别/生成/合成 → 播放”的轮次模式，并非持续音频流或低延迟全双工通话。
+- 目前需要手动点击开始/结束录音；自动静音检测、静默后主动发起话题、回声消除和边说边传尚未实现。
+- 角色名称与提示词可在通话设置中配置；通话上下文在当前通话会话中维护，尚未与原有每角色聊天记录完整打通。
+- `voice_bridge.py` 按常见 GPT-SoVITS API v2 的 `POST /tts` 接口编写。不同分支或版本的 API 可能不同，如返回接口错误，需要对照你本机 GPT-SoVITS 文档修改请求路径和字段。
+- faster-whisper 默认使用 CPU `int8` 与 `small` 模型。首次下载、识别、模型生成和语音合成都可能需要较长时间；可以根据硬件调整 `WHISPER_MODEL` 等环境变量。
+
+## 四、用 Android Studio 构建
+
+1. 克隆仓库或下载包含本次功能分支的源码。
+2. Android Studio 打开项目根目录（包含 `settings.gradle.kts` 的目录）。
+3. 使用 JDK 17，等待 Gradle Sync 完成。
+4. 连接 Android 手机，启用开发者选项和 USB 调试，然后点击 Run。
+5. 如需生成 APK，在 Android Studio 选择 **Build > Build Bundle(s) / APK(s) > Build APK(s)**。Debug APK 通常位于 `app/build/outputs/apk/debug/app-debug.apk`。
 
 ## 常见问题
-- **无法连接 LM Studio**：确认电脑 IP 没变；服务监听地址允许局域网；检查 Windows 防火墙的 TCP 1234。
-- **语音失败**：确认 TTS 服务窗口仍在运行；测试 `http://电脑IP:8765/health`；检查防火墙 TCP 8765 和电脑互联网连接。
-- **语音输入无结果**：Android 系统语音识别依赖设备的语音识别服务和网络/系统语言设置。
-- **模型回复为空或报错**：先在 LM Studio 本机测试 `/v1/chat/completions`；模型 ID 可在 `/v1/models` 查看后手动填写。
+
+- **手机无法连接 LM Studio**：确认电脑 IP、端口、服务器监听设置和 Windows 防火墙规则；手机与电脑需在可互通的局域网。
+- **普通聊天没有语音**：检查 Edge TTS 服务是否运行，并测试 `http://电脑IP:8765/health`。
+- **语音通话桥接服务无法访问**：测试 `http://电脑IP:8770/health`，确认服务启动并允许专用网络访问 TCP 8770。
+- **语音识别失败**：确认依赖已安装、电脑能下载模型，并查看桥接服务终端输出；首次运行可能需要较长时间。
+- **LM Studio 返回错误**：先在电脑本机测试 `/v1/models` 和 `/v1/chat/completions`，确认模型 ID 与服务地址。
+- **GPT-SoVITS 合成失败**：检查 API 是否已启动、参考音频路径是否存在、参考文本是否准确，以及当前版本是否接受桥接代码中的请求字段。
+- **手机收不到回复音频**：检查桥接服务日志、手机与电脑的网络连接和服务端口设置。
 
 ## 安全提示
-第一版为家庭/局域网测试版，使用 HTTP 明文通信，没有账号鉴权。仅在可信局域网使用，不要将 LM Studio 或 TTS 服务端口转发到公网。对敏感对话请谨慎使用在线语音合成服务。
+
+本项目面向可信局域网开发测试。当前服务使用 HTTP 明文通信且没有账号鉴权，请勿将 LM Studio、Edge TTS 或语音桥接端口直接暴露到公网。语音音频会发送至你配置的电脑服务；普通聊天的 Edge TTS 需要访问在线服务。请谨慎处理敏感对话及参考音频。
