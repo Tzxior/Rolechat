@@ -104,6 +104,7 @@ fun RoleChatApp() {
     var model by remember { mutableStateOf(prefs.getString("model", "") ?: "") }
     var voice by remember { mutableStateOf(prefs.getString("voice", "zh-CN-XiaoxiaoNeural") ?: "") }
     var showSettings by remember { mutableStateOf(false) }
+    var voiceMode by remember { mutableStateOf(false) }
     var showRoleEditor by remember { mutableStateOf(false) }
     var editingRole by remember { mutableStateOf<Role?>(null) }
     var status by remember { mutableStateOf("请在设置中填写电脑的局域网 IP") }
@@ -273,24 +274,33 @@ fun RoleChatApp() {
                         }
                     },
                     actions = {
-                        IconButton(enabled = roles.isNotEmpty(), onClick = {
-                            val rolePrompt = """
-                                你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈。
-                                角色名称：${selectedRole.name}
-                                身份背景：${selectedRole.background}
-                                性格：${selectedRole.personality}
-                                说话风格：${selectedRole.style}
-                                与用户的关系：${selectedRole.relationship}
-                                当前场景：${selectedRole.scene}
-                                保持对话连续性，允许角色有自己的想法和情绪。默认使用自然口语中文，回复简洁、有生活感，适合直接朗读。
-                            """.trimIndent()
-                            val callIntent = Intent(context, VoiceCallActivity::class.java).apply {
-                                putExtra("role_id", selectedRole.id)
-                                putExtra("role_name", selectedRole.name)
-                                putExtra("role_prompt", rolePrompt)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp)
+                                .background(Color(0xFF30343E), RoundedCornerShape(24.dp)).padding(3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = { voiceMode = false },
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = if (!voiceMode) Color(0xFFB6C8FF) else Color.Transparent,
+                                    contentColor = if (!voiceMode) Color(0xFF14161C) else Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp)
+                            ) { Text("对话") }
+                            TextButton(
+                                enabled = roles.isNotEmpty(),
+                                onClick = { voiceMode = true },
+                                colors = ButtonDefaults.textButtonColors(
+                                    containerColor = if (voiceMode) Color(0xFFB6C8FF) else Color.Transparent,
+                                    contentColor = if (voiceMode) Color(0xFF14161C) else Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp)
+                            ) {
+                                Icon(Icons.Default.Call, null, Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("电话")
                             }
-                            context.startActivity(callIntent)
-                        }) { Icon(Icons.Default.Call, "语音通话") }
+                        }
                         IconButton(onClick = { showRoleEditor = true; editingRole = null }) { Icon(Icons.Default.Add, "新建角色") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "设置") }
                     },
@@ -298,6 +308,17 @@ fun RoleChatApp() {
                 )
             },
             bottomBar = {
+                if (voiceMode) {
+                    key(selectedRole.id) {
+                        VoiceCallScreen(
+                            initialRoleId = selectedRole.id,
+                            initialRoleName = selectedRole.name,
+                            initialRolePrompt = rolePromptFor(selectedRole),
+                            onHangup = { voiceMode = false },
+                            embedded = true
+                        )
+                    }
+                } else {
                 Row(
                     Modifier.fillMaxWidth().background(Color(0xFF20232B)).padding(10.dp),
                     verticalAlignment = Alignment.Bottom,
@@ -321,6 +342,7 @@ fun RoleChatApp() {
                     IconButton(enabled = roles.isNotEmpty() && input.isNotBlank() && !busy, onClick = { val text = input.trim(); scope.launch { sendChat(text) } }) {
                         Icon(Icons.Default.Send, "发送")
                     }
+                }
                 }
             },
             containerColor = Color(0xFF14161C)
