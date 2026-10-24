@@ -1,16 +1,18 @@
 package com.example.rolechat
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -18,17 +20,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -40,184 +44,335 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 class VoiceCallActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { VoiceCallScreen(onHangup = { finish() }) }
+        setContent { VoiceCallScreen(
+            initialRoleId = intent.getStringExtra("role_id") ?: "friend",
+            initialRoleName = intent.getStringExtra("role_name") ?: "知心朋友",
+            initialRolePrompt = intent.getStringExtra("role_prompt") ?: "温柔、聪明、幽默，像熟悉的朋友一样自然聊天。回复简短，适合直接朗读。",
+            onHangup = { finish() }
+        ) }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VoiceCallScreen(onHangup: () -> Unit) {
+private fun VoiceCallScreen(
+    initialRoleId: String,
+    initialRoleName: String,
+    initialRolePrompt: String,
+    onHangup: () -> Unit
+) {
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("rolechat", 0) }
+    val prefs = remember { context.getSharedPreferences("rolechat", Context.MODE_PRIVATE) }
     val scope = rememberCoroutineScope()
     val client = remember {
         OkHttpClient.Builder()
-            .connectTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(240, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
+            .callTimeout(300, TimeUnit.SECONDS)
             .build()
     }
-    var bridgeUrl by remember { mutableStateOf(prefs.getString("voice_bridge_url", "http://192.168.1.100:8770/voice/turn") ?: "") }
-    var lmUrl by remember { mutableStateOf(prefs.getString("lm_url", "http://192.168.1.100:1234/v1") ?: "") }
+    var bridgeUrl by remember { mutableStateOf(prefs.getString("voice_bridge_url", "http://192.168.1.100:8770") ?: "") }
     var model by remember { mutableStateOf(prefs.getString("model", "") ?: "") }
-    var roleName by remember { mutableStateOf("知心朋友") }
-    var rolePrompt by remember { mutableStateOf("温柔、聪明、幽默，像熟悉的朋友一样自然聊天。回复简短，适合直接朗读。") }
-    var recording by remember { mutableStateOf(false) }
+    var roleName by remember { mutableStateOf(initialRoleName) }
+    var rolePrompt by remember { mutableStateOf(initialRolePrompt) }
+    var active by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("点击开始通话") }
+    var status by remember { mutableStateOf("点击开始连续通话") }
     var transcript by remember { mutableStateOf("") }
     var answer by remember { mutableStateOf("") }
-    var history by remember { mutableStateOf(listOf<Pair<String, String>>()) }
-    var silenceSeconds by remember { mutableIntStateOf(20) }
     var showSettings by remember { mutableStateOf(false) }
-    var recorder by remember { mutableStateOf<AudioRecord?>(null) }
-    var recordJob by remember { mutableStateOf<Job?>(null) }
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var recordBuffer by remember { mutableStateOf<ByteArrayOutputStream?>(null) }
-    var recordError by remember { mutableStateOf("") }
-    val stopRequested = remember { AtomicBoolean(false) }
+    var proactiveSeconds by remember { mutableIntStateOf(prefs.getInt("voice_proactive_seconds", 45)) }
+    var currentPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var loopJob by remember { mutableStateOf<Job?>(null) }
+    val callActive = remember { AtomicBoolean(false) }
+    val stopPlayback = remember { AtomicBoolean(false) }
     val sampleRate = 16000
+    val roleId = initialRoleId
 
-    fun startRecording() {
-        if (recording || processing) return
+    fun persistMessage(role: String, text: String) {
+        if (text.isBlank()) return
+        synchronized(prefs) {
+            val all = try { JSONObject(prefs.getString("histories", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+            val arr = try { all.optJSONArray(roleId) ?: JSONArray() } catch (_: Exception) { JSONArray() }
+            arr.put(JSONObject().put("role", role).put("content", text).put("id", UUID.randomUUID().toString()))
+            all.put(roleId, arr)
+            prefs.edit().putString("histories", all.toString()).apply()
+        }
+    }
+
+    fun historyJson(): String {
+        val all = try { JSONObject(prefs.getString("histories", "{}") ?: "{}") } catch (_: Exception) { JSONObject() }
+        val source = all.optJSONArray(roleId) ?: JSONArray()
+        val result = JSONArray()
+        for (i in maxOf(0, source.length() - 20) until source.length()) {
+            val item = source.optJSONObject(i) ?: continue
+            val role = item.optString("role")
+            if (role == "user" || role == "assistant") {
+                result.put(JSONObject().put("role", role).put("content", item.optString("content").take(4000)))
+            }
+        }
+        return result.toString()
+    }
+
+    suspend fun requestTurn(wav: ByteArray): JSONObject = withContext(Dispatchers.IO) {
+        val root = bridgeUrl.trim().trimEnd('/')
+        val url = if (root.endsWith("/voice/turn")) root else "$root/voice/turn"
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("audio", "utterance.wav", wav.toRequestBody("audio/wav".toMediaType()))
+            .addFormDataPart("role_name", roleName)
+            .addFormDataPart("role_prompt", rolePrompt)
+            .addFormDataPart("model", model)
+            .addFormDataPart("history_json", historyJson())
+            .build()
+        val request = Request.Builder().url(url).post(body).build()
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("语音服务 ${response.code}: $text")
+            JSONObject(text)
+        }
+    }
+
+    suspend fun requestProactive(): JSONObject = withContext(Dispatchers.IO) {
+        val root = bridgeUrl.trim().trimEnd('/')
+        val url = if (root.endsWith("/voice/turn")) root.removeSuffix("/voice/turn") + "/voice/proactive"
+            else "$root/voice/proactive"
+        val payload = JSONObject()
+            .put("role_name", roleName)
+            .put("role_prompt", rolePrompt)
+            .put("model", model)
+            .put("history_json", historyJson())
+        val request = Request.Builder().url(url)
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        client.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("主动聊天请求 ${response.code}: $text")
+            JSONObject(text)
+        }
+    }
+
+    suspend fun playReply(base64Audio: String) {
+        if (base64Audio.isBlank() || !callActive.get()) return
+        val bytes = android.util.Base64.decode(base64Audio, android.util.Base64.DEFAULT)
+        val file = File(context.cacheDir, "voice_call_reply.wav")
+        FileOutputStream(file).use { it.write(bytes) }
+        withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine<Unit> { continuation ->
+                if (!callActive.get() || stopPlayback.get()) {
+                    if (continuation.isActive) continuation.resume(Unit)
+                    return@suspendCancellableCoroutine
+                }
+                val mp = MediaPlayer()
+                currentPlayer = mp
+                fun finishPlayer() {
+                    try { mp.release() } catch (_: Exception) {}
+                    if (currentPlayer === mp) currentPlayer = null
+                    if (continuation.isActive) continuation.resume(Unit)
+                }
+                try {
+                    mp.setDataSource(file.absolutePath)
+                    mp.setOnPreparedListener {
+                        if (callActive.get() && !stopPlayback.get()) {
+                            status = "角色正在说话 · 可随时打断"
+                            it.start()
+                        } else finishPlayer()
+                    }
+                    mp.setOnCompletionListener { finishPlayer() }
+                    mp.setOnErrorListener { _, _, _ -> finishPlayer(); true }
+                    continuation.invokeOnCancellation { try { mp.release() } catch (_: Exception) {} }
+                    mp.prepareAsync()
+                } catch (_: Exception) { finishPlayer() }
+            }
+        }
+    }
+
+    fun stopCurrentPlayback() {
+        stopPlayback.set(true)
+        currentPlayer?.let { mp ->
+            try { mp.stop() } catch (_: Exception) {}
+            try { mp.release() } catch (_: Exception) {}
+        }
+        currentPlayer = null
+        status = "已打断播放"
+    }
+
+    fun stopCall() {
+        callActive.set(false)
+        active = false
+        stopCurrentPlayback()
+        loopJob?.cancel()
+        loopJob = null
+        processing = false
+        status = "通话已结束"
+    }
+
+    fun startCall() {
+        if (callActive.get()) return
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             status = "需要麦克风权限"
             return
         }
-        try {
-            player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
-            player = null
-            val minSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate,
-                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minSize, sampleRate)
-            )
-            if (audioRecord.state != AudioRecord.STATE_INITIALIZED) {
-                audioRecord.release()
-                status = "麦克风初始化失败"
-                return
-            }
-            val output = ByteArrayOutputStream()
-            recorder = audioRecord
-            recordBuffer = output
-            stopRequested.set(false)
-            audioRecord.startRecording()
-            recording = true
-            status = "正在聆听…再次点击结束本轮"
-            recordJob = scope.launch(Dispatchers.IO) {
-                val chunk = ByteArray(4096)
-                try {
-                    while (!stopRequested.get()) {
-                        val count = audioRecord.read(chunk, 0, chunk.size)
-                        if (count > 0) synchronized(output) { output.write(chunk, 0, count) }
-                    }
-                } catch (e: Exception) {
-                    recordError = e.message ?: "录音失败"
-                } finally {
-                    try { audioRecord.stop() } catch (_: Exception) {}
-                    audioRecord.release()
-                }
-            }
-        } catch (e: Exception) {
-            status = "无法开始录音：${e.message}"
-            recording = false
+        if (bridgeUrl.isBlank()) {
+            status = "请先设置电脑端语音桥接地址"
+            showSettings = true
+            return
         }
-    }
-
-    fun stopAndSend() {
-        if (!recording || processing) return
-        recording = false
-        processing = true
-        status = "正在识别并生成回复…"
-        stopRequested.set(true)
-        try { recorder?.stop() } catch (_: Exception) {}
-        val output = recordBuffer
-        recordJob = scope.launch {
+        callActive.set(true)
+        stopPlayback.set(false)
+        active = true
+        status = "正在聆听 · 说完后自动识别并回复"
+        loopJob = scope.launch(Dispatchers.IO) {
+            var lastInteraction = SystemClock.elapsedRealtime()
+            var proactiveDoneThisIdle = false
+            val frameBytes = 3200 // 100 ms at 16 kHz, mono, PCM16
+            val preRoll = ArrayDeque<ByteArray>()
+            var utterance = ByteArrayOutputStream()
+            var speechStarted = false
+            var voicedFrames = 0
+            var silenceFrames = 0
+            var utteranceFrames = 0
+            var audioRecord: AudioRecord? = null
             try {
-                delay(150)
-                val pcm = output?.toByteArray() ?: ByteArray(0)
-                if (pcm.size < sampleRate / 2) {
-                    status = "录音太短，请再说一次"
-                    return@launch
-                }
-                val wav = makeWav(pcm, sampleRate, 1, 16)
-                val response = withContext(Dispatchers.IO) {
-                    val body = MultipartBody.Builder().setType(MultipartBody.FORM)
-                        .addFormDataPart("audio", "turn.wav", wav.toRequestBody("audio/wav".toMediaType()))
-                        .addFormDataPart("role_name", roleName)
-                        .addFormDataPart("role_prompt", rolePrompt)
-                        .addFormDataPart("model", model)
-                        .addFormDataPart("history_json", JSONArray().apply {
-                            history.takeLast(12).forEach { (r, c) -> put(JSONObject().put("role", r).put("content", c)) }
-                        }.toString())
-                        .build()
-                    val request = Request.Builder().url(bridgeUrl.trim()).post(body).build()
-                    client.newCall(request).execute().use { res ->
-                        val text = res.body?.string().orEmpty()
-                        if (!res.isSuccessful) error("服务端 ${res.code}: $text")
-                        JSONObject(text)
+                while (callActive.get()) {
+                    if (audioRecord == null) {
+                        val minBuffer = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                        val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate,
+                            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, frameBytes * 4))
+                        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+                            rec.release()
+                            throw IllegalStateException("麦克风初始化失败")
+                        }
+                        rec.startRecording()
+                        audioRecord = rec
                     }
-                }
-                transcript = response.optString("transcript")
-                answer = response.optString("answer")
-                if (transcript.isNotBlank()) history = history + ("user" to transcript)
-                if (answer.isNotBlank()) history = history + ("assistant" to answer)
-                status = if (answer.isBlank()) "没有识别到语音，请重试" else "角色正在回复…"
-                val audioB64 = response.optString("audio_base64")
-                if (audioB64.isNotBlank()) {
-                    val audio = android.util.Base64.decode(audioB64, android.util.Base64.DEFAULT)
-                    val file = File(context.cacheDir, "voice_call_reply.wav")
-                    FileOutputStream(file).use { it.write(audio) }
-                    withContext(Dispatchers.Main) {
-                        player?.release()
-                        player = MediaPlayer().apply {
-                            setDataSource(file.absolutePath)
-                            setOnPreparedListener { mp -> mp.start(); status = "正在播放 · 点击“打断并说话”可插话" }
-                            setOnCompletionListener { mp -> mp.release(); player = null; status = "回复完成 · 点击麦克风继续" }
-                            setOnErrorListener { mp, _, _ -> mp.release(); player = null; status = "播放失败"; true }
-                            prepareAsync()
+                    val frame = ByteArray(frameBytes)
+                    val count = audioRecord!!.read(frame, 0, frame.size)
+                    if (count <= 0) continue
+                    val chunk = if (count == frame.size) frame else frame.copyOf(count)
+                    var sum = 0L
+                    var samples = 0
+                    var i = 0
+                    while (i + 1 < count) {
+                        val sample = ((chunk[i + 1].toInt() shl 8) or (chunk[i].toInt() and 0xff)).toShort().toInt()
+                        sum += sample.toLong() * sample.toLong()
+                        samples++
+                        i += 2
+                    }
+                    val rms = if (samples > 0) kotlin.math.sqrt(sum.toDouble() / samples) else 0.0
+                    val voiced = rms > 650.0
+                    if (!speechStarted) {
+                        if (preRoll.size >= 3) preRoll.removeFirst()
+                        preRoll.addLast(chunk)
+                        if (voiced) voicedFrames++ else voicedFrames = 0
+                        if (voicedFrames >= 2) {
+                            speechStarted = true
+                            utterance = ByteArrayOutputStream()
+                            preRoll.forEach { utterance.write(it) }
+                            preRoll.clear()
+                            utterance.write(chunk)
+                            utteranceFrames = 4
+                            silenceFrames = 0
+                            withContext(Dispatchers.Main) { status = "检测到你在说话…" }
+                        } else {
+                            val idleSeconds = (SystemClock.elapsedRealtime() - lastInteraction) / 1000
+                            if (!proactiveDoneThisIdle && idleSeconds >= proactiveSeconds) {
+                                withContext(Dispatchers.Main) { processing = true; status = "角色主动找你聊天…" }
+                                try {
+                                    val result = requestProactive()
+                                    val text = result.optString("answer").trim()
+                                    if (text.isNotBlank()) {
+                                        answer = text
+                                        persistMessage("assistant", text)
+                                        withContext(Dispatchers.Main) { processing = false }
+                                        playReply(result.optString("audio_base64"))
+                                    }
+                                    proactiveDoneThisIdle = true
+                                    lastInteraction = SystemClock.elapsedRealtime()
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) { status = "主动聊天失败：${e.message}" ; processing = false }
+                                    proactiveDoneThisIdle = true
+                                }
+                                audioRecord?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+                                audioRecord = null
+                            }
+                        }
+                    } else {
+                        utterance.write(chunk)
+                        utteranceFrames++
+                        if (voiced) silenceFrames = 0 else silenceFrames++
+                        if (silenceFrames >= 10 || utteranceFrames >= 180) {
+                            val pcm = utterance.toByteArray()
+                            audioRecord?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+                            audioRecord = null
+                            speechStarted = false
+                            voicedFrames = 0
+                            silenceFrames = 0
+                            utteranceFrames = 0
+                            preRoll.clear()
+                            if (pcm.size >= sampleRate * 2 / 3) {
+                                withContext(Dispatchers.Main) { processing = true; status = "正在识别并生成回复…" }
+                                try {
+                                    val result = requestTurn(makeWav(pcm, sampleRate, 1, 16))
+                                    val heard = result.optString("transcript").trim()
+                                    val reply = result.optString("answer").trim()
+                                    transcript = heard
+                                    answer = reply
+                                    if (heard.isNotBlank()) persistMessage("user", heard)
+                                    if (reply.isNotBlank()) persistMessage("assistant", reply)
+                                    if (heard.isNotBlank()) lastInteraction = SystemClock.elapsedRealtime()
+                                    proactiveDoneThisIdle = false
+                                    withContext(Dispatchers.Main) { processing = false }
+                                    if (reply.isNotBlank()) playReply(result.optString("audio_base64"))
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) { processing = false; status = "本轮失败：${e.message}" }
+                                    delay(700)
+                                }
+                                lastInteraction = SystemClock.elapsedRealtime()
+                            }
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                status = "通话失败：${e.message ?: "请检查电脑端服务"}"
+                withContext(Dispatchers.Main) { status = "通话异常：${e.message}"; active = false; processing = false }
+                callActive.set(false)
             } finally {
-                processing = false
-                recorder = null
+                audioRecord?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+                withContext(Dispatchers.Main) {
+                    active = false
+                    processing = false
+                    currentPlayer?.let { try { it.release() } catch (_: Exception) {} }
+                    currentPlayer = null
+                }
             }
         }
-    }
-
-    fun interruptAndTalk() {
-        player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
-        player = null
-        recording = false
-        processing = false
-        startRecording()
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            stopRequested.set(true)
-            try { recorder?.stop() } catch (_: Exception) {}
-            recorder?.release()
-            player?.release()
+            callActive.set(false)
+            stopPlayback.set(true)
+            loopJob?.cancel()
+            currentPlayer?.let { try { it.release() } catch (_: Exception) {} }
         }
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
         Scaffold(topBar = {
             TopAppBar(
-                title = { Column { Text("语音通话"); Text(status, style = MaterialTheme.typography.labelSmall) } },
+                title = { Column { Text("语音通话 · ${roleName}"); Text(status, style = MaterialTheme.typography.labelSmall) } },
                 actions = {
-                    TextButton(onClick = { showSettings = true }) { Text("设置") }
-                    IconButton(onClick = onHangup) { Icon(Icons.Default.CallEnd, contentDescription = "挂断") }
+                    TextButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, null); Text("设置") }
+                    IconButton(onClick = { if (active) stopCall() else onHangup() }) { Icon(Icons.Default.CallEnd, contentDescription = "挂断") }
                 }
             )
         }) { padding ->
@@ -226,57 +381,55 @@ private fun VoiceCallScreen(onHangup: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                Spacer(Modifier.height(12.dp))
+                Icon(Icons.Default.Call, null, Modifier.size(76.dp))
                 Text(roleName, style = MaterialTheme.typography.headlineMedium)
-                Text("电脑端识别语音 → LM Studio 生成回复 → GPT-SoVITS 合成声音", style = MaterialTheme.typography.bodyMedium)
+                Text("连续监听 · 自动断句 · 自动回复 · 静默时主动聊天", style = MaterialTheme.typography.bodyMedium)
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("你说的", style = MaterialTheme.typography.labelLarge)
-                        Text(transcript.ifBlank { "等待语音…" })
-                        Divider()
+                        Text("最近识别", style = MaterialTheme.typography.labelLarge)
+                        Text(transcript.ifBlank { "等待你说话…" })
+                        HorizontalDivider()
                         Text("角色回复", style = MaterialTheme.typography.labelLarge)
-                        Text(answer.ifBlank { "等待角色回复…" })
+                        Text(answer.ifBlank { "角色的回复会显示在这里。" })
                     }
                 }
+                Text("静默 ${proactiveSeconds} 秒后，角色可主动发起一段对话。通话时会暂停监听来避免把角色播放声重新录进去。", style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         enabled = !processing,
-                        onClick = { if (recording) stopAndSend() else startRecording() }
+                        onClick = { if (active) stopCall() else startCall() }
                     ) {
-                        Icon(if (recording) Icons.Default.Stop else Icons.Default.Mic, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (recording) "结束并发送" else "开始说话")
+                        Icon(if (active) Icons.Default.CallEnd else Icons.Default.Mic, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (active) "结束通话" else "开始连续通话")
                     }
-                    OutlinedButton(enabled = player != null, onClick = { interruptAndTalk() }) {
-                        Icon(Icons.Default.Mic, null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("打断并说话")
+                    OutlinedButton(enabled = currentPlayer != null, onClick = { stopCurrentPlayback() }) {
+                        Text("打断播放")
                     }
                 }
-                OutlinedButton(onClick = onHangup, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.CallEnd, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("挂断通话")
-                }
-                Text("提示：此版采用按轮次录音，处理完后播放回复；模型和语音合成耗时取决于电脑性能。", style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = onHangup, modifier = Modifier.fillMaxWidth()) { Text("返回聊天") }
             }
         }
         if (showSettings) {
             AlertDialog(
                 onDismissRequest = { showSettings = false },
-                title = { Text("语音通话设置") },
+                title = { Text("连续语音设置") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(bridgeUrl, { bridgeUrl = it }, label = { Text("电脑语音桥接 API") }, singleLine = true)
-                        OutlinedTextField(lmUrl, { lmUrl = it }, label = { Text("LM Studio API（记录用）") }, singleLine = true)
-                        OutlinedTextField(model, { model = it }, label = { Text("模型 ID（可留空）") }, singleLine = true)
+                        OutlinedTextField(bridgeUrl, { bridgeUrl = it }, label = { Text("电脑桥接服务地址") }, singleLine = true)
+                        OutlinedTextField(model, { model = it }, label = { Text("LM Studio 模型 ID（可留空）") }, singleLine = true)
                         OutlinedTextField(roleName, { roleName = it }, label = { Text("角色名称") }, singleLine = true)
-                        OutlinedTextField(rolePrompt, { rolePrompt = it }, label = { Text("角色性格提示词") })
+                        OutlinedTextField(rolePrompt, { rolePrompt = it }, label = { Text("角色设定") }, minLines = 3)
+                        Text("静默主动开口时间")
+                        Slider(value = proactiveSeconds.toFloat(), onValueChange = { proactiveSeconds = it.toInt() }, valueRange = 20f..180f, steps = 7)
+                        Text("${proactiveSeconds} 秒")
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        prefs.edit().putString("voice_bridge_url", bridgeUrl).putString("lm_url", lmUrl)
-                            .putString("model", model).apply()
+                        prefs.edit().putString("voice_bridge_url", bridgeUrl.trim().trimEnd('/'))
+                            .putString("model", model).putInt("voice_proactive_seconds", proactiveSeconds).apply()
                         showSettings = false
                     }) { Text("保存") }
                 },
@@ -287,24 +440,13 @@ private fun VoiceCallScreen(onHangup: () -> Unit) {
 }
 
 private fun makeWav(pcm: ByteArray, sampleRate: Int, channels: Int, bitsPerSample: Int): ByteArray {
-    val totalDataLen = pcm.size + 36
-    val byteRate = sampleRate * channels * bitsPerSample / 8
     val out = ByteArrayOutputStream()
     fun ascii(s: String) = s.toByteArray(Charsets.US_ASCII)
-    out.write(ascii("RIFF"))
-    out.write(le32(totalDataLen))
-    out.write(ascii("WAVE"))
-    out.write(ascii("fmt "))
-    out.write(le32(16))
-    out.write(le16(1))
-    out.write(le16(channels))
-    out.write(le32(sampleRate))
-    out.write(le32(byteRate))
-    out.write(le16(channels * bitsPerSample / 8))
-    out.write(le16(bitsPerSample))
-    out.write(ascii("data"))
-    out.write(le32(pcm.size))
-    out.write(pcm)
+    out.write(ascii("RIFF")); out.write(le32(pcm.size + 36)); out.write(ascii("WAVE"))
+    out.write(ascii("fmt ")); out.write(le32(16)); out.write(le16(1)); out.write(le16(channels))
+    out.write(le32(sampleRate)); out.write(le32(sampleRate * channels * bitsPerSample / 8))
+    out.write(le16(channels * bitsPerSample / 8)); out.write(le16(bitsPerSample))
+    out.write(ascii("data")); out.write(le32(pcm.size)); out.write(pcm)
     return out.toByteArray()
 }
 private fun le16(v: Int) = byteArrayOf((v and 0xff).toByte(), ((v shr 8) and 0xff).toByte())
