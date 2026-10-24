@@ -183,6 +183,7 @@ private fun VoiceCallScreen(
                     finishPlayback = null
                     try { mp.release() } catch (_: Exception) {}
                     if (currentPlayer === mp) currentPlayer = null
+                    if (callActive.get()) status = "回复结束 · 正在聆听"
                     if (continuation.isActive) continuation.resume(Unit)
                 }
                 finishPlayback = { finishPlayer() }
@@ -304,9 +305,9 @@ private fun VoiceCallScreen(
                                     if (text.isNotBlank()) {
                                         answer = text
                                         persistMessage("assistant", text)
-                                        withContext(Dispatchers.Main) { processing = false }
-                                        playReply(result.optString("audio_base64"))
                                     }
+                                    withContext(Dispatchers.Main) { processing = false }
+                                    if (text.isNotBlank()) playReply(result.optString("audio_base64"))
                                     proactiveDoneThisIdle = true
                                     lastInteraction = SystemClock.elapsedRealtime()
                                 } catch (e: Exception) {
