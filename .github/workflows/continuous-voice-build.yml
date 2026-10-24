@@ -3,11 +3,12 @@ name: Build and syntax-check
 on:
   push:
     branches:
-      - feature/continuous-voice-call
+      - 'feature/**'
   pull_request:
     branches:
       - main
       - feature/voice-call-gpt-sovits
+      - feature/continuous-voice-call
   workflow_dispatch:
 
 jobs:
