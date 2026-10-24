@@ -92,7 +92,11 @@ private fun VoiceCallScreen(
     var showSettings by remember { mutableStateOf(false) }
     var proactiveSeconds by remember { mutableIntStateOf(prefs.getInt("voice_proactive_seconds", 45)) }
     var currentPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var finishPlayback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var loopJob by remember { mutableStateOf<Job?>(null) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        status = if (granted) "麦克风权限已授予，再点一次开始通话" else "未授予麦克风权限，无法通话"
+    }
     val callActive = remember { AtomicBoolean(false) }
     val stopPlayback = remember { AtomicBoolean(false) }
     val sampleRate = 16000
@@ -172,11 +176,16 @@ private fun VoiceCallScreen(
                 }
                 val mp = MediaPlayer()
                 currentPlayer = mp
+                var finished = false
                 fun finishPlayer() {
+                    if (finished) return
+                    finished = true
+                    finishPlayback = null
                     try { mp.release() } catch (_: Exception) {}
                     if (currentPlayer === mp) currentPlayer = null
                     if (continuation.isActive) continuation.resume(Unit)
                 }
+                finishPlayback = { finishPlayer() }
                 try {
                     mp.setDataSource(file.absolutePath)
                     mp.setOnPreparedListener {
@@ -196,12 +205,14 @@ private fun VoiceCallScreen(
 
     fun stopCurrentPlayback() {
         stopPlayback.set(true)
+        finishPlayback?.invoke()
         currentPlayer?.let { mp ->
             try { mp.stop() } catch (_: Exception) {}
             try { mp.release() } catch (_: Exception) {}
         }
         currentPlayer = null
-        status = "已打断播放"
+        stopPlayback.set(false)
+        status = "已打断播放，恢复聆听"
     }
 
     fun stopCall() {
@@ -284,6 +295,8 @@ private fun VoiceCallScreen(
                         } else {
                             val idleSeconds = (SystemClock.elapsedRealtime() - lastInteraction) / 1000
                             if (!proactiveDoneThisIdle && idleSeconds >= proactiveSeconds) {
+                                audioRecord?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+                                audioRecord = null
                                 withContext(Dispatchers.Main) { processing = true; status = "角色主动找你聊天…" }
                                 try {
                                     val result = requestProactive()
@@ -300,8 +313,6 @@ private fun VoiceCallScreen(
                                     withContext(Dispatchers.Main) { status = "主动聊天失败：${e.message}" ; processing = false }
                                     proactiveDoneThisIdle = true
                                 }
-                                audioRecord?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
-                                audioRecord = null
                             }
                         }
                     } else {
@@ -398,7 +409,12 @@ private fun VoiceCallScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         enabled = !processing,
-                        onClick = { if (active) stopCall() else startCall() }
+                        onClick = {
+                            if (active) stopCall()
+                            else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            else startCall()
+                        }
                     ) {
                         Icon(if (active) Icons.Default.CallEnd else Icons.Default.Mic, null)
                         Spacer(Modifier.width(8.dp))
