@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -244,6 +245,7 @@ fun RoleChatApp() {
                         }
                     },
                     actions = {
+                        IconButton(onClick = { context.startActivity(Intent(context, VoiceCallActivity::class.java)) }) { Icon(Icons.Default.Call, "语音通话") }
                         IconButton(onClick = { showRoleEditor = true; editingRole = null }) { Icon(Icons.Default.Add, "新建角色") }
                         IconButton(onClick = { showSettings = true }) { Icon(Icons.Default.Settings, "设置") }
                     },
