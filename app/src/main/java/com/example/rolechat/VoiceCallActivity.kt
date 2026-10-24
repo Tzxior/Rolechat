@@ -96,8 +96,17 @@ private fun VoiceCallScreen(
     }
     var bridgeUrl by remember { mutableStateOf(prefs.getString("voice_bridge_url", "http://192.168.1.100:8770") ?: "") }
     var model by remember { mutableStateOf(prefs.getString("model", "") ?: "") }
-    var roleName by remember { mutableStateOf(initialRoleName) }
-    var rolePrompt by remember { mutableStateOf(initialRolePrompt) }
+    var roles by remember { mutableStateOf(loadRoles(prefs)) }
+    var roleId by remember {
+        mutableStateOf(
+            initialRoleId.takeIf { id -> roles.any { it.id == id } }
+                ?: prefs.getString("selected_role", roles.firstOrNull()?.id ?: "") ?: ""
+        )
+    }
+    var histories by remember { mutableStateOf(loadHistories(prefs)) }
+    val selectedRole = roles.firstOrNull { it.id == roleId }
+    var roleName by remember { mutableStateOf(selectedRole?.name ?: initialRoleName) }
+    var rolePrompt by remember { mutableStateOf(selectedRole?.let { rolePromptFor(it) } ?: initialRolePrompt) }
     var active by remember { mutableStateOf(false) }
     var processing by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("点击开始连续通话") }
@@ -114,7 +123,6 @@ private fun VoiceCallScreen(
     val callActive = remember { AtomicBoolean(false) }
     val stopPlayback = remember { AtomicBoolean(false) }
     val sampleRate = 16000
-    val roleId = initialRoleId
 
     fun persistMessage(role: String, text: String) {
         if (text.isBlank()) return
@@ -124,6 +132,7 @@ private fun VoiceCallScreen(
             arr.put(JSONObject().put("role", role).put("content", text).put("id", UUID.randomUUID().toString()))
             all.put(roleId, arr)
             prefs.edit().putString("histories", all.toString()).apply()
+            histories = loadHistories(prefs)
         }
     }
 
@@ -411,13 +420,42 @@ private fun VoiceCallScreen(
                 Icon(Icons.Default.Call, null, Modifier.size(76.dp))
                 Text(roleName, style = MaterialTheme.typography.headlineMedium)
                 Text("连续监听 · 自动断句 · 自动回复 · 静默时主动聊天", style = MaterialTheme.typography.bodyMedium)
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("最近识别", style = MaterialTheme.typography.labelLarge)
-                        Text(transcript.ifBlank { "等待你说话…" })
-                        HorizontalDivider()
-                        Text("角色回复", style = MaterialTheme.typography.labelLarge)
-                        Text(answer.ifBlank { "角色的回复会显示在这里。" })
+                if (roles.size > 1) {
+                    Text("切换角色", style = MaterialTheme.typography.labelLarge)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        roles.forEach { role ->
+                            FilterChip(
+                                selected = role.id == roleId,
+                                onClick = {
+                                    if (active) stopCall()
+                                    roleId = role.id
+                                    roleName = role.name
+                                    rolePrompt = rolePromptFor(role)
+                                    prefs.edit().putString("selected_role", role.id).apply()
+                                    histories = loadHistories(prefs)
+                                    transcript = ""
+                                    answer = ""
+                                    status = "已切换到 " + role.name
+                                },
+                                label = { Text(role.name) }
+                            )
+                        }
+                    }
+                }
+                Text("完整聊天记录", style = MaterialTheme.typography.titleMedium)
+                if (histories[roleId].orEmpty().isEmpty()) {
+                    Text("这个角色还没有聊天记录。", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    histories[roleId].orEmpty().forEach { message ->
+                        val isUser = message.role == "user"
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+                            Card {
+                                Column(Modifier.widthIn(max = 320.dp).padding(12.dp)) {
+                                    Text(if (isUser) "你" else roleName, style = MaterialTheme.typography.labelSmall)
+                                    Text(message.content)
+                                }
+                            }
+                        }
                     }
                 }
                 Text("静默 ${proactiveSeconds} 秒后，角色可主动发起一段对话。通话时会暂停监听来避免把角色播放声重新录进去。", style = MaterialTheme.typography.bodySmall)
@@ -439,7 +477,7 @@ private fun VoiceCallScreen(
                         Text("打断播放")
                     }
                 }
-                OutlinedButton(onClick = onHangup, modifier = Modifier.fillMaxWidth()) { Text("返回聊天") }
+                OutlinedButton(onClick = onHangup, modifier = Modifier.fillMaxWidth()) { Text("切换到文字聊天") }
             }
         }
         if (showSettings) {
@@ -450,8 +488,8 @@ private fun VoiceCallScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(bridgeUrl, { bridgeUrl = it }, label = { Text("电脑桥接服务地址") }, singleLine = true)
                         OutlinedTextField(model, { model = it }, label = { Text("LM Studio 模型 ID（可留空）") }, singleLine = true)
-                        OutlinedTextField(roleName, { roleName = it }, label = { Text("角色名称") }, singleLine = true)
-                        OutlinedTextField(rolePrompt, { rolePrompt = it }, label = { Text("角色设定") }, minLines = 3)
+                        Text("当前角色：$roleName")
+                        Text("角色设定与文字聊天共用；请在文字聊天的角色编辑中修改。", style = MaterialTheme.typography.bodySmall)
                         Text("静默主动开口时间")
                         Slider(value = proactiveSeconds.toFloat(), onValueChange = { proactiveSeconds = it.toInt() }, valueRange = 20f..180f, steps = 7)
                         Text("${proactiveSeconds} 秒")
@@ -460,7 +498,8 @@ private fun VoiceCallScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         prefs.edit().putString("voice_bridge_url", bridgeUrl.trim().trimEnd('/'))
-                            .putString("model", model).putInt("voice_proactive_seconds", proactiveSeconds).apply()
+                            .putString("model", model).putInt("voice_proactive_seconds", proactiveSeconds)
+                            .putString("selected_role", roleId).apply()
                         showSettings = false
                     }) { Text("保存") }
                 },
