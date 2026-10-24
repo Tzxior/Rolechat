@@ -82,7 +82,8 @@ fun VoiceCallScreen(
     initialRoleName: String,
     initialRolePrompt: String,
     onHangup: () -> Unit,
-    embedded: Boolean = false
+    embedded: Boolean = false,
+    onHistoryChanged: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("rolechat", Context.MODE_PRIVATE) }
@@ -134,6 +135,7 @@ fun VoiceCallScreen(
             all.put(roleId, arr)
             prefs.edit().putString("histories", all.toString()).apply()
             histories = loadHistories(prefs)
+            scope.launch(Dispatchers.Main) { onHistoryChanged?.invoke() }
         }
     }
 
