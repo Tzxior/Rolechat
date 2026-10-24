@@ -115,7 +115,7 @@ fun RoleChatApp() {
         onDispose { owner?.lifecycle?.removeObserver(observer) }
     }
 
-    val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.first()
+    val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull() ?: Role("", "", "", "", "", "", "")
     val messages = histories[selectedRole.id] ?: emptyList()
 
     fun persist() {
@@ -260,7 +260,7 @@ fun RoleChatApp() {
                         }
                     },
                     actions = {
-                        IconButton(onClick = {
+                        IconButton(enabled = roles.isNotEmpty(), onClick = {
                             val rolePrompt = """
                                 你是沉浸式角色扮演对话引擎。始终以当前角色身份自然地和用户交谈。
                                 角色名称：${selectedRole.name}
@@ -326,7 +326,15 @@ fun RoleChatApp() {
                         )
                     }
                 }
-                if (messages.isEmpty()) {
+                if (roles.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("还没有角色", style = MaterialTheme.typography.titleLarge)
+                            Text("从空白开始创建，或使用模板作为起点。模板本身不会成为角色。", color = Color.LightGray)
+                            Button(onClick = { editingRole = null; showRoleEditor = true }) { Text("创建自定义角色") }
+                        }
+                    }
+                } else if (messages.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("开始和 ${selectedRole.name} 对话", style = MaterialTheme.typography.titleLarge)
@@ -418,16 +426,36 @@ fun RoleChatApp() {
 @Composable
 fun RoleEditorDialog(role: Role?, onDismiss: () -> Unit, onSave: (Role) -> Unit, onDelete: (Role) -> Unit) {
     var name by remember(role?.id) { mutableStateOf(role?.name ?: "") }
-    var background by remember(role?.id) { mutableStateOf(role?.background ?: "一位熟悉用户的朋友，有自己的生活经历。") }
-    var personality by remember(role?.id) { mutableStateOf(role?.personality ?: "温柔、聪明、幽默，偶尔会调侃用户。") }
-    var style by remember(role?.id) { mutableStateOf(role?.style ?: "自然口语化，像日常聊天，不要长篇说教。") }
-    var relationship by remember(role?.id) { mutableStateOf(role?.relationship ?: "亲密且互相信任的朋友") }
-    var scene by remember(role?.id) { mutableStateOf(role?.scene ?: "晚上，在一个安静舒适的地方聊天。") }
+    var background by remember(role?.id) { mutableStateOf(role?.background ?: "") }
+    var personality by remember(role?.id) { mutableStateOf(role?.personality ?: "") }
+    var style by remember(role?.id) { mutableStateOf(role?.style ?: "") }
+    var relationship by remember(role?.id) { mutableStateOf(role?.relationship ?: "") }
+    var scene by remember(role?.id) { mutableStateOf(role?.scene ?: "") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (role == null) "创建角色" else "编辑角色") },
         text = {
-            Column(Modifier.heightIn(max = 560.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                if (role == null) {
+                    Text("可选模板（点击后可继续任意修改）", style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = {
+                            name = "知心朋友"; background = "一位熟悉用户的朋友，有自己的生活经历。"
+                            personality = "温柔、聪明、幽默，偶尔会调侃用户。"; style = "自然口语化，像日常聊天，不要长篇说教。"
+                            relationship = "亲密且互相信任的朋友"; scene = "在一个安静舒适的地方聊天。"
+                        }) { Text("知心朋友") }
+                        TextButton(onClick = {
+                            name = "人生导师"; background = "阅历丰富、务实的导师。"
+                            personality = "冷静、睿智、坦诚，不说空话。"; style = "清晰、直接，善于追问和启发。"
+                            relationship = "值得信任的顾问"; scene = "正在讨论最近遇到的问题。"
+                        }) { Text("人生导师") }
+                        TextButton(onClick = {
+                            name = "奇幻旅伴"; background = "来自奇幻世界的冒险者。"
+                            personality = "勇敢、好奇、富有想象力。"; style = "有画面感，但保持对话自然。"
+                            relationship = "并肩旅行的伙伴"; scene = "你们正在一座古城的旅店里休息。"
+                        }) { Text("奇幻旅伴") }
+                    }
+                }
                 OutlinedTextField(name, { name = it }, label = { Text("角色名称") }, singleLine = true)
                 OutlinedTextField(background, { background = it }, label = { Text("身份背景") })
                 OutlinedTextField(personality, { personality = it }, label = { Text("性格") })
@@ -452,19 +480,15 @@ fun RoleEditorDialog(role: Role?, onDismiss: () -> Unit, onSave: (Role) -> Unit,
 
 fun loadRoles(prefs: android.content.SharedPreferences): List<Role> {
     val raw = prefs.getString("roles", null)
-    if (raw.isNullOrBlank()) return listOf(
-        Role("friend", "知心朋友", "一位熟悉用户的朋友，有自己的生活经历。", "温柔、聪明、幽默，偶尔会调侃用户。", "自然口语化，像日常聊天，不要长篇说教。", "亲密且互相信任的朋友", "晚上，在一个安静舒适的地方聊天。"),
-        Role("mentor", "人生导师", "阅历丰富、务实的导师。", "冷静、睿智、坦诚，不说空话。", "清晰、直接，善于追问和启发。", "值得信任的顾问", "正在和用户讨论最近遇到的问题。"),
-        Role("fantasy", "奇幻旅伴", "来自奇幻世界的冒险者。", "勇敢、好奇、富有想象力。", "有画面感，但保持对话自然。", "并肩旅行的伙伴", "你们正在一座古城的旅店里休息。")
-    )
+    if (raw.isNullOrBlank()) return emptyList()
     return try {
         val arr = JSONArray(raw)
         (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             Role(o.getString("id"), o.getString("name"), o.optString("background"), o.optString("personality"),
                 o.optString("style"), o.optString("relationship"), o.optString("scene"))
-        }.ifEmpty { listOf(Role("friend", "知心朋友", "", "", "", "", "")) }
-    } catch (_: Exception) { listOf(Role("friend", "知心朋友", "", "", "", "", "")) }
+        }.filter { it.id.isNotBlank() }
+    } catch (_: Exception) { emptyList() }
 }
 
 fun loadHistories(prefs: android.content.SharedPreferences): Map<String, List<ChatMessage>> {
