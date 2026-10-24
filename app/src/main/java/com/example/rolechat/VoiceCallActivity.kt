@@ -77,11 +77,12 @@ class VoiceCallActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VoiceCallScreen(
+fun VoiceCallScreen(
     initialRoleId: String,
     initialRoleName: String,
     initialRolePrompt: String,
-    onHangup: () -> Unit
+    onHangup: () -> Unit,
+    embedded: Boolean = false
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("rolechat", Context.MODE_PRIVATE) }
@@ -402,6 +403,33 @@ private fun VoiceCallScreen(
     }
 
     MaterialTheme(colorScheme = darkColorScheme()) {
+        if (embedded) {
+            Row(
+                Modifier.fillMaxWidth().padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    modifier = Modifier.weight(1f),
+                    enabled = !processing,
+                    onClick = {
+                        if (active) stopCall()
+                        else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        else startCall()
+                    }
+                ) {
+                    Icon(if (active) Icons.Default.CallEnd else Icons.Default.Mic, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (active) "结束通话" else "开始通话")
+                }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    enabled = currentPlayer != null,
+                    onClick = { stopCurrentPlayback() }
+                ) { Text("打断对方") }
+            }
+        } else {
         Scaffold(topBar = {
             TopAppBar(
                 title = { Column { Text("语音通话 · ${roleName}"); Text(status, style = MaterialTheme.typography.labelSmall) } },
@@ -505,6 +533,7 @@ private fun VoiceCallScreen(
                 },
                 dismissButton = { TextButton(onClick = { showSettings = false }) { Text("取消") } }
             )
+        }
         }
     }
 }
