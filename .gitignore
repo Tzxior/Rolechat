@@ -1,0 +1,6 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+**/.DS_Store
+tts_server/.venv/
