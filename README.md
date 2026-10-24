@@ -41,7 +41,19 @@ LM Studio API 地址示例：
    - 语音音色：`zh-CN-XiaoxiaoNeural`
 6. 点击“保存并测试”。若连接失败，检查 IP、同一局域网、LM Studio 服务器是否启动和防火墙。
 
-## 四、打包 APK
+
+## 五、语音通话原型（新增）
+
+新增 Android 语音通话入口与 PC 端语音桥接服务，代码位于 `voice_server/`。
+
+1. 先按 `voice_server/README.md` 配置并启动 GPT-SoVITS API。
+2. 根据示例文件设置 `LM_STUDIO_URL`、`GPT_SOVITS_REF_AUDIO`、参考文本等环境变量。
+3. 启动 `voice_server/start_voice_bridge.bat`，手机端访问 `http://电脑IP:8770/health` 验证连接。
+4. 在 APK 聊天页右上角点击电话图标，进入语音通话；首次使用需要麦克风权限，并在通话页设置中填写 `http://电脑IP:8770/voice/turn`。
+
+本版是可先行验证的轮次式语音原型：点击录音、结束并发送、电脑识别/生成/合成、手机播放；可在播放时点击“打断并说话”。它尚不是自动 VAD 的全双工连续通话，静默后自动主动开口也尚未接入。请先在本地按 GPT-SoVITS 实际版本核对 API 路径和参数。
+
+## 六、打包 APK
 Android Studio：**Build > Build Bundle(s) / APK(s) > Build APK(s)**。
 生成路径通常为 `app/build/outputs/apk/debug/app-debug.apk`。
 
