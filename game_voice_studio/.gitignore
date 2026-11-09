@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+config.json
+voices/*.json
+input/*
+output/*
+reports/*
+logs/*
+!input/.gitkeep
+!output/.gitkeep
+!reports/.gitkeep
+!logs/.gitkeep
