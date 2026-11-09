@@ -13,10 +13,10 @@ Windows 桌面端批量角色语音制作工具。第一版使用 PySide6 GUI，
 
 ## 安装
 
-建议 Windows 10/11，Python 3.10–3.12（同时要符合你本机 GPT-SoVITS 版本的兼容要求）。GUI 环境与 GPT-SoVITS 推理环境分开安装，避免依赖互相污染。
+建议 Windows 10/11。GUI 可单独使用 Python 3.13（PySide6 与 requests 独立安装）；GPT-SoVITS 继续使用它自己兼容的 Python 环境，两者通过本机 HTTP API 通信，不必共用 Python 版本。
 
     cd game_voice_studio
-    py -3.11 -m venv .venv
+    py -3.13 -m venv .venv
     .venv\Scripts\activate
     python -m pip install --upgrade pip
     pip install -r requirements.txt
